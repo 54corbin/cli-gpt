@@ -12,13 +12,10 @@ use std::{
 use termimad::crossterm::style::Color::*;
 use termimad::*;
 
-use settings::Settings;
-mod settings;
-
 #[tokio::main]
 async fn main() {
-    println!("Hint: two continuous enters for sending");
     let mut app = App::new();
+    println!("Hint: two continuous enters for sending");
     app.init().await;
     app.run().await;
 }
@@ -57,9 +54,17 @@ impl App {
     }
 
     pub fn new() -> Self {
-        let settings = Self::get_settings();
-        // println!("{:#?}", settings);
-        let config = OpenAIConfig::new().with_api_key(settings.api_key);
+        let api_key = match env::var("OPENAI_API_KEY") {
+            Ok(val) => {
+                println!("api key: {val:?}");
+                val
+            }
+            Err(_) => {
+                panic!("Set OPENAI_API_KEY as env var first please!");
+            }
+        };
+
+        let config = OpenAIConfig::new().with_api_key(api_key);
         let client = Client::with_config(config);
         let mut skin = MadSkin::default();
         skin.set_fg(DarkCyan);
@@ -126,8 +131,10 @@ impl App {
             stdout().flush().unwrap();
         }
         println!("\n");
+
         // let buf_line_count = buf.split('\n').count() + 1;
         // println!("\nbuf len = {}, lines= {}\n", buf.len(), buf_line_count);
+        //
         //clean the raw content and reformat the full content from gpt
         // for _ in 0..buf_line_count {
         //     // cursor back to the start of the line
@@ -142,14 +149,5 @@ impl App {
         // // format the whole content
         // // self.skin.term_text(buf.as_str());
         // print_text(buf.as_str());
-    }
-
-    fn get_settings() -> Settings {
-        let app_name = "cli_gpt";
-        let config_path = confy::get_configuration_file_path(app_name, None);
-        // println!("config_path:{:#?}", config_path);
-        let settings: Settings = confy::load(app_name, None).unwrap();
-
-        settings
     }
 }
