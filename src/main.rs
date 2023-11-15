@@ -1,58 +1,155 @@
-use app::App;
-use chatgpt::err;
-use eframe::IconData;
-mod app;
+use async_openai::{
+    config::OpenAIConfig,
+    types::{ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs},
+    Client,
+};
+use futures::StreamExt;
+use std::{
+    env,
+    io::{self, stdout, BufRead, Write},
+    println,
+};
+use termimad::crossterm::style::Color::*;
+use termimad::*;
+
+use settings::Settings;
 mod settings;
 
-pub const APP_NAME: &str = "Oxidized GPT";
-
-fn config_font(ctx: &egui::Context) {
-    // Start with the default fonts (we will be adding to them rather than replacing them).
-    let mut fonts = egui::FontDefinitions::default();
-
-    // Install my own font (maybe supporting non-latin characters).
-    // .ttf and .otf files supported.
-    fonts.font_data.insert(
-        "my_font".to_owned(),
-        egui::FontData::from_static(include_bytes!("../media/PingFangSC.ttf")),
-    );
-
-    // Put my font first (highest priority) for proportional text:
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, "my_font".to_owned());
-
-    // Put my font as last fallback for monospace:
-    fonts
-        .families
-        .entry(egui::FontFamily::Monospace)
-        .or_default()
-        .push("my_font".to_owned());
-
-    // Tell egui to use these fonts:
-    ctx.set_fonts(fonts);
+#[tokio::main]
+async fn main() {
+    println!("Hint: two continuous enters for sending");
+    let mut app = App::new();
+    app.init().await;
+    app.run().await;
 }
 
-#[tokio::main]
-async fn main() -> std::result::Result<(), err::Error> {
-    let native_options = eframe::NativeOptions {
-        icon_data: Some(IconData {
-            rgba: include_bytes!("../media/chatgpt_logo.jpeg").to_vec(),
-            height: 50,
-            width: 50,
-        }),
-        ..Default::default()
-    };
-    eframe::run_native(
-        APP_NAME,
-        native_options,
-        Box::new(|cc| {
-            config_font(&cc.egui_ctx);
-            Box::new(App::new(cc, APP_NAME))
-        }),
-    );
+struct App {
+    client: Client<OpenAIConfig>,
+    skin: MadSkin, // theme for rendering output messages(etc: MD, code snippet...)
+}
 
-    Ok(())
+impl App {
+    //main loop
+    pub async fn run(&mut self) {
+        loop {
+            let pmt = Self::read_pmt();
+            if pmt.len() > 1 {
+                self.send_message(pmt).await;
+            }
+        }
+    }
+
+    async fn init(&mut self) {
+        match env::args()
+            .skip(1) //the first cmd parm is the executeable itself
+            .reduce(|p, s| format!("{:#1?} {:#2?}", p, s))
+        {
+            Some(pmt) => {
+                self.send_message(pmt).await;
+            }
+            None => {
+                eprintln!(
+                    "{}",
+                    self.skin.term_text("Hello! How can I assist you today?\n")
+                );
+            }
+        };
+    }
+
+    pub fn new() -> Self {
+        let settings = Self::get_settings();
+        // println!("{:#?}", settings);
+        let config = OpenAIConfig::new().with_api_key(settings.api_key);
+        let client = Client::with_config(config);
+        let mut skin = MadSkin::default();
+        skin.set_fg(DarkCyan);
+
+        Self { client, skin }
+    }
+
+    fn read_pmt() -> String {
+        let mut buf = String::new();
+        let lines = io::stdin().lock().lines();
+
+        // read until blank line(two continuous enters)
+        for line in lines {
+            let last_line = line.unwrap();
+
+            if last_line.len() <= 1 {
+                break;
+            }
+            // buf.push('\n');
+            buf.push_str(&last_line);
+        }
+        buf
+    }
+
+    async fn send_message(&mut self, pmt: String) {
+        // println!("sending...");
+        let messages = [ChatCompletionRequestUserMessageArgs::default()
+            .content(pmt.as_str())
+            .build()
+            .unwrap()
+            .into()];
+        let request = CreateChatCompletionRequestArgs::default()
+            .model("gpt-3.5-turbo")
+            .max_tokens(123_u16)
+            .messages(messages)
+            .build()
+            .unwrap();
+        // println!("request: {:#?}", request);
+
+        let mut stream = self.client.chat().create_stream(request).await.unwrap();
+
+        // From Rust docs on print: https://doc.rust-lang.org/std/macro.print.html
+        //
+        //  Note that stdout is frequently line-buffered by default so it may be necessary
+        //  to use io::stdout().flush() to ensure the output is emitted immediately.
+        //
+        //  The print! macro will lock the standard output on each call.
+        //  If you call print! within a hot loop, this behavior may be the bottleneck of the loop.
+        //  To avoid this, lock stdout with io::stdout().lock():
+        let mut lock = stdout().lock();
+        let mut buf = "".to_string();
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(resp) => resp.choices.iter().for_each(|chat_choice| {
+                    if let Some(ref content) = chat_choice.delta.content {
+                        write!(lock, "{content}").unwrap();
+                        buf.push_str(content.as_ref());
+                    }
+                }),
+                Err(e) => {
+                    writeln!(lock, "error: {:#?}", e).unwrap();
+                }
+            }
+            stdout().flush().unwrap();
+        }
+        println!("\n");
+        // let buf_line_count = buf.split('\n').count() + 1;
+        // println!("\nbuf len = {}, lines= {}\n", buf.len(), buf_line_count);
+        //clean the raw content and reformat the full content from gpt
+        // for _ in 0..buf_line_count {
+        //     // cursor back to the start of the line
+        //     print!("\x1B[1A");
+        //
+        //     // clean the whole line
+        //     print!("\x1B[2K");
+        // }
+        //
+        // stdout().flush().unwrap();
+        //
+        // // format the whole content
+        // // self.skin.term_text(buf.as_str());
+        // print_text(buf.as_str());
+    }
+
+    fn get_settings() -> Settings {
+        let app_name = "cli_gpt";
+        let config_path = confy::get_configuration_file_path(app_name, None);
+        // println!("config_path:{:#?}", config_path);
+        let settings: Settings = confy::load(app_name, None).unwrap();
+
+        settings
+    }
 }
