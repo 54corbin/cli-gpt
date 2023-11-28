@@ -1,6 +1,7 @@
-# oxidized-gpt-cli
+# A command lind based ChatGPT wrapper written in rust
 
-![image](https://github.com/54corbin/oxidized-gpt/assets/21215811/4959000b-2fdc-421e-9861-9d198b3d1843)
+
+![image](https://github.com/54corbin/cli-gpt/assets/21215811/cbd1144f-9b6b-4a78-93ab-e663beb0666a)
 
 
 
