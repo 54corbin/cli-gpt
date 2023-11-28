@@ -20,8 +20,9 @@ confy = "0.5.1"
 serde = "1.0.159"
 serde_derive = "1.0.159"
 termimad = "0.26.1"
-async-openai = "0.16.2"
+async-openai = "0.17.1"
 futures = "0.3.29"
+clap = { version = "4.4.10", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1.34.0", features = ["macros", "rt-multi-thread"] }

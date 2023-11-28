@@ -3,6 +3,7 @@ use async_openai::{
     types::{ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs},
     Client,
 };
+use clap::Parser;
 use futures::StreamExt;
 use std::{
     env,
@@ -15,19 +16,37 @@ use termimad::*;
 #[tokio::main]
 async fn main() {
     let mut app = App::new();
-    println!("Hint: two continuous enters for sending");
-    app.init().await;
+    // app.init().await;
     app.run().await;
+}
+
+#[derive(Parser, Debug)]
+struct AppArgs {
+    #[arg(short = '4', long, default_value_t = false)]
+    enable_gpt4: bool,
+
+    pmt: Vec<String>,
 }
 
 struct App {
     client: Client<OpenAIConfig>,
     skin: MadSkin, // theme for rendering output messages(etc: MD, code snippet...)
+    model: &'static str,
+    initial_pmt: String,
 }
 
 impl App {
     //main loop
     pub async fn run(&mut self) {
+        println!("Tip: two continuous enters for sending");
+        if !self.initial_pmt.is_empty() {
+            self.send_message(self.initial_pmt.clone()).await;
+        } else {
+            eprintln!(
+                "{}",
+                self.skin.term_text("Hello! How can I assist you today?\n")
+            );
+        }
         loop {
             let pmt = Self::read_pmt();
             if pmt.len() > 1 {
@@ -36,27 +55,10 @@ impl App {
         }
     }
 
-    async fn init(&mut self) {
-        match env::args()
-            .skip(1) //the first cmd parm is the executeable itself
-            .reduce(|p, s| format!("{:#1?} {:#2?}", p, s))
-        {
-            Some(pmt) => {
-                self.send_message(pmt).await;
-            }
-            None => {
-                eprintln!(
-                    "{}",
-                    self.skin.term_text("Hello! How can I assist you today?\n")
-                );
-            }
-        };
-    }
-
     pub fn new() -> Self {
         let api_key = match env::var("OPENAI_API_KEY") {
             Ok(val) => {
-                println!("api key: {val:?}");
+                // println!("api key: {val:?}");
                 val
             }
             Err(_) => {
@@ -69,7 +71,20 @@ impl App {
         let mut skin = MadSkin::default();
         skin.set_fg(DarkCyan);
 
-        Self { client, skin }
+        let mut model = "gpt-3.5-turbo";
+        let args = AppArgs::parse();
+        if args.enable_gpt4 {
+            model = "gpt-4-1106-preview";
+        }
+
+        let pmt = args.pmt.join(" ");
+
+        Self {
+            client,
+            skin,
+            model,
+            initial_pmt: pmt,
+        }
     }
 
     fn read_pmt() -> String {
@@ -90,14 +105,14 @@ impl App {
     }
 
     async fn send_message(&mut self, pmt: String) {
-        // println!("sending...");
+        println!("sending... model={}", self.model);
         let messages = [ChatCompletionRequestUserMessageArgs::default()
-            .content(pmt.as_str())
+            .content(pmt)
             .build()
             .unwrap()
             .into()];
         let request = CreateChatCompletionRequestArgs::default()
-            .model("gpt-3.5-turbo")
+            .model(self.model)
             .max_tokens(123_u16)
             .messages(messages)
             .build()
