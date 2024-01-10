@@ -7,10 +7,17 @@ use clap::Parser;
 use futures::StreamExt;
 use std::{
     env,
-    io::{self, stdout, BufRead, Write},
+    io::{stdout, Write},
     println,
+    process::exit,
 };
-use termimad::crossterm::style::Color::*;
+use termimad::crossterm::{
+    cursor::MoveUp,
+    event::{self, Event, KeyCode},
+    queue,
+    style::Color::*,
+    terminal::{enable_raw_mode, Clear, ClearType},
+};
 use termimad::*;
 
 #[tokio::main]
@@ -47,6 +54,9 @@ impl App {
                 self.skin.term_text("Hello! How can I assist you today?\n")
             );
         }
+
+        enable_raw_mode().unwrap();
+
         loop {
             let pmt = Self::read_pmt();
             if pmt.len() > 1 {
@@ -89,23 +99,51 @@ impl App {
 
     fn read_pmt() -> String {
         let mut buf = String::new();
-        let lines = io::stdin().lock().lines();
-
-        // read until blank line(two continuous enters)
-        for line in lines {
-            let last_line = line.unwrap();
-
-            if last_line.len() <= 1 {
-                break;
-            }
-            // buf.push('\n');
-            buf.push_str(&last_line);
+        loop {
+            if let Ok(Event::Key(event)) = event::read() {
+                match event.code {
+                    KeyCode::Enter => {
+                        println!("modifiers: {:#?}", event.modifiers);
+                        if event.modifiers.contains(event::KeyModifiers::SHIFT) {
+                            buf.push('\n');
+                            let _ = stdout().write(&[b'\n']).unwrap();
+                            panic!("Shift pressed");
+                        } else {
+                            return buf;
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        if c == 'c' && event.modifiers.contains(event::KeyModifiers::CONTROL) {
+                            println!("Bye!");
+                            exit(0);
+                        }
+                        buf.push(c);
+                        let _ = stdout().write(&[c as u8]).unwrap();
+                    }
+                    _ => {}
+                };
+            };
+            // let _ = stdout().write(buf.as_bytes()).unwrap();
+            stdout().flush();
         }
-        buf
+
+        // let lines = io::stdin().lock().lines();
+        //
+        // // read until blank line(two continuous enters)
+        // for line in lines {
+        //     let last_line = line.unwrap();
+        //
+        //     if last_line.len() <= 1 {
+        //         break;
+        //     }
+        //     // buf.push('\n');
+        //     buf.push_str(&last_line);
+        // }
+        // buf
     }
 
     async fn send_message(&mut self, pmt: String) {
-        println!("sending... model={}", self.model);
+        // println!("sending... model={}", self.model);
         let messages = [ChatCompletionRequestUserMessageArgs::default()
             .content(pmt)
             .build()
@@ -130,13 +168,13 @@ impl App {
         //  If you call print! within a hot loop, this behavior may be the bottleneck of the loop.
         //  To avoid this, lock stdout with io::stdout().lock():
         let mut lock = stdout().lock();
-        let mut buf = "".to_string();
+        let mut resp_buf = "".to_string();
         while let Some(result) = stream.next().await {
             match result {
                 Ok(resp) => resp.choices.iter().for_each(|chat_choice| {
                     if let Some(ref content) = chat_choice.delta.content {
                         write!(lock, "{content}").unwrap();
-                        buf.push_str(content.as_ref());
+                        resp_buf.push_str(content.as_ref());
                     }
                 }),
                 Err(e) => {
@@ -145,24 +183,21 @@ impl App {
             }
             stdout().flush().unwrap();
         }
-        println!("\n");
 
-        // let buf_line_count = buf.split('\n').count() + 1;
-        // println!("\nbuf len = {}, lines= {}\n", buf.len(), buf_line_count);
-        //
-        //clean the raw content and reformat the full content from gpt
-        // for _ in 0..buf_line_count {
-        //     // cursor back to the start of the line
-        //     print!("\x1B[1A");
-        //
-        //     // clean the whole line
-        //     print!("\x1B[2K");
-        // }
-        //
-        // stdout().flush().unwrap();
-        //
-        // // format the whole content
-        // // self.skin.term_text(buf.as_str());
-        // print_text(buf.as_str());
+        let resp_lines = resp_buf.lines().count();
+
+        //clean the raw content and reformat the whole content from gpt
+        let _ = queue!(
+            stdout(),
+            MoveUp(resp_lines as u16),
+            Clear(ClearType::CurrentLine),
+            Clear(ClearType::FromCursorDown)
+        );
+
+        // format the whole content as MD
+        // print_text(resp_buf.as_str());
+        self.skin.print_text(resp_buf.as_str());
+        println!("\n");
+        stdout().flush().unwrap();
     }
 }
