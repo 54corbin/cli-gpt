@@ -7,16 +7,14 @@ use clap::Parser;
 use futures::StreamExt;
 use std::{
     env,
-    io::{stdout, Write},
+    io::{self, stdout, BufRead, Write},
     println,
-    process::exit,
 };
 use termimad::crossterm::{
     cursor::MoveUp,
-    event::{self, Event, KeyCode},
     queue,
     style::Color::*,
-    terminal::{enable_raw_mode, Clear, ClearType},
+    terminal::{Clear, ClearType},
 };
 use termimad::*;
 
@@ -54,8 +52,6 @@ impl App {
                 self.skin.term_text("Hello! How can I assist you today?\n")
             );
         }
-
-        enable_raw_mode().unwrap();
 
         loop {
             let pmt = Self::read_pmt();
@@ -99,47 +95,20 @@ impl App {
 
     fn read_pmt() -> String {
         let mut buf = String::new();
-        loop {
-            if let Ok(Event::Key(event)) = event::read() {
-                match event.code {
-                    KeyCode::Enter => {
-                        println!("modifiers: {:#?}", event.modifiers);
-                        if event.modifiers.contains(event::KeyModifiers::SHIFT) {
-                            buf.push('\n');
-                            let _ = stdout().write(&[b'\n']).unwrap();
-                            panic!("Shift pressed");
-                        } else {
-                            return buf;
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        if c == 'c' && event.modifiers.contains(event::KeyModifiers::CONTROL) {
-                            println!("Bye!");
-                            exit(0);
-                        }
-                        buf.push(c);
-                        let _ = stdout().write(&[c as u8]).unwrap();
-                    }
-                    _ => {}
-                };
-            };
-            // let _ = stdout().write(buf.as_bytes()).unwrap();
-            stdout().flush();
+
+        let lines = io::stdin().lock().lines();
+
+        // read until blank line(two continuous enters)
+        for line in lines {
+            let last_line = line.unwrap();
+
+            if last_line.len() <= 1 {
+                break;
+            }
+            buf.push_str(&last_line);
         }
 
-        // let lines = io::stdin().lock().lines();
-        //
-        // // read until blank line(two continuous enters)
-        // for line in lines {
-        //     let last_line = line.unwrap();
-        //
-        //     if last_line.len() <= 1 {
-        //         break;
-        //     }
-        //     // buf.push('\n');
-        //     buf.push_str(&last_line);
-        // }
-        // buf
+        buf
     }
 
     async fn send_message(&mut self, pmt: String) {
@@ -191,13 +160,13 @@ impl App {
             stdout(),
             MoveUp(resp_lines as u16),
             Clear(ClearType::CurrentLine),
-            Clear(ClearType::FromCursorDown)
+            Clear(ClearType::FromCursorDown),
+            Clear(ClearType::UntilNewLine),
         );
 
         // format the whole content as MD
-        // print_text(resp_buf.as_str());
         self.skin.print_text(resp_buf.as_str());
-        println!("\n");
         stdout().flush().unwrap();
+        println!("\n");
     }
 }
