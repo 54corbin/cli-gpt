@@ -25,6 +25,7 @@ async fn main() {
     app.run().await;
 }
 
+// args for the app, can be passed in from the command line
 #[derive(Parser, Debug)]
 struct AppArgs {
     #[arg(short = '4', long, default_value_t = false)]
@@ -34,9 +35,10 @@ struct AppArgs {
 }
 
 struct App {
-    client: Client<OpenAIConfig>,
-    skin: MadSkin, // theme for rendering output messages(etc: MD, code snippet...)
-    model: &'static str,
+    client: Client<OpenAIConfig>, // chatgpt's api sdk client
+    skin: MadSkin,                // theme for rendering output messages(etc: MD, code snippet...)
+    model: &'static str,          // stands for different chatgpt models.
+    // eg: gpt-3.5-turbo, gpt-4-1106-preview
     initial_pmt: String,
 }
 
