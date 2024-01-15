@@ -1,6 +1,11 @@
 use async_openai::{
     config::OpenAIConfig,
-    types::{ChatCompletionRequestUserMessageArgs, CreateChatCompletionRequestArgs},
+    error::OpenAIError,
+    types::{
+        ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
+        ChatCompletionRequestUserMessageArgs, ChatCompletionResponseStream,
+        CreateChatCompletionRequestArgs,
+    },
     Client,
 };
 use clap::Parser;
@@ -11,10 +16,11 @@ use std::{
     println,
 };
 use termimad::crossterm::{
-    cursor::MoveUp,
+    cursor::{MoveToPreviousLine, MoveUp, RestorePosition, SavePosition},
     queue,
     style::Color::*,
-    terminal::{Clear, ClearType},
+    terminal::{size, Clear, ClearType, DisableLineWrap},
+    QueueableCommand,
 };
 use termimad::*;
 
@@ -39,7 +45,8 @@ struct App {
     skin: MadSkin,                // theme for rendering output messages(etc: MD, code snippet...)
     model: &'static str,          // stands for different chatgpt models.
     // eg: gpt-3.5-turbo, gpt-4-1106-preview
-    initial_pmt: String,
+    initial_pmt: String, // stands for initial prompt
+    history: Vec<ChatCompletionRequestMessage>,
 }
 
 impl App {
@@ -47,7 +54,10 @@ impl App {
     pub async fn run(&mut self) {
         println!("Tip: two continuous enters for sending");
         if !self.initial_pmt.is_empty() {
-            self.send_message(self.initial_pmt.clone()).await;
+            // self.send_message(self.initial_pmt.clone()).await;
+            if let Ok(stream) = self.send_message(self.initial_pmt.clone()).await {
+                self.streaming_and_rendering_resp(stream).await;
+            };
         } else {
             eprintln!(
                 "{}",
@@ -58,7 +68,9 @@ impl App {
         loop {
             let pmt = Self::read_pmt();
             if pmt.len() > 1 {
-                self.send_message(pmt).await;
+                if let Ok(stream) = self.send_message(pmt).await {
+                    self.streaming_and_rendering_resp(stream).await;
+                };
             }
         }
     }
@@ -92,6 +104,7 @@ impl App {
             skin,
             model,
             initial_pmt: pmt,
+            history: Vec::new(),
         }
     }
 
@@ -113,23 +126,35 @@ impl App {
         buf
     }
 
-    async fn send_message(&mut self, pmt: String) {
-        // println!("sending... model={}", self.model);
-        let messages = [ChatCompletionRequestUserMessageArgs::default()
+    async fn send_message(
+        &mut self,
+        pmt: String,
+    ) -> Result<ChatCompletionResponseStream, OpenAIError> {
+        // println!(
+        //     "sending... model={} \t history count={}",
+        //     self.model,
+        //     self.history.len()
+        // );
+        let message = ChatCompletionRequestUserMessageArgs::default()
             .content(pmt)
             .build()
             .unwrap()
-            .into()];
+            .into();
+
+        self.history.push(message);
         let request = CreateChatCompletionRequestArgs::default()
             .model(self.model)
-            .max_tokens(123_u16)
-            .messages(messages)
+            .max_tokens(1234_u16)
+            .messages(self.history.to_vec())
             .build()
             .unwrap();
         // println!("request: {:#?}", request);
 
-        let mut stream = self.client.chat().create_stream(request).await.unwrap();
+        self.client.chat().create_stream(request).await
+    }
 
+    //read response from the stream and print it as markdown
+    async fn streaming_and_rendering_resp(&mut self, mut stream: ChatCompletionResponseStream) {
         // From Rust docs on print: https://doc.rust-lang.org/std/macro.print.html
         //
         //  Note that stdout is frequently line-buffered by default so it may be necessary
@@ -155,20 +180,30 @@ impl App {
             stdout().flush().unwrap();
         }
 
-        let resp_lines = resp_buf.lines().count();
+        let resp = ChatCompletionRequestAssistantMessageArgs::default()
+            .content(resp_buf.clone())
+            .build()
+            .unwrap();
+        self.history.push(resp.into());
+
+        // count the number of lines in the response buffer
+        let screen_width = size().unwrap().0;
+        let mut resp_lines = 0_u16;
+        for line in resp_buf.lines() {
+            resp_lines += (line.len() as u16 / screen_width) + 1;
+        }
 
         //clean the raw content and reformat the whole content from gpt
         let _ = queue!(
             stdout(),
-            MoveUp(resp_lines as u16),
-            Clear(ClearType::CurrentLine),
+            MoveToPreviousLine(resp_lines - 1),
             Clear(ClearType::FromCursorDown),
-            Clear(ClearType::UntilNewLine),
         );
 
         // format the whole content as MD
         self.skin.print_text(resp_buf.as_str());
         stdout().flush().unwrap();
         println!("\n");
+        // println!("response lines: {resp_lines} \t screen width: {screen_width}");
     }
 }
