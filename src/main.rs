@@ -16,7 +16,7 @@ use std::{
     println,
 };
 use termimad::crossterm::{
-    cursor::{MoveToPreviousLine, MoveUp, RestorePosition, SavePosition},
+    cursor::{MoveLeft, MoveToPreviousLine, MoveUp, RestorePosition, SavePosition},
     queue,
     style::Color::*,
     terminal::{size, Clear, ClearType, DisableLineWrap},
@@ -197,6 +197,7 @@ impl App {
         let _ = queue!(
             stdout(),
             MoveToPreviousLine(resp_lines - 1),
+            MoveLeft(screen_width),
             Clear(ClearType::FromCursorDown),
         );
 
