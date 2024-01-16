@@ -16,11 +16,10 @@ use std::{
     println,
 };
 use termimad::crossterm::{
-    cursor::{MoveLeft, MoveToPreviousLine, MoveUp, RestorePosition, SavePosition},
+    cursor::{MoveLeft, MoveToPreviousLine},
     queue,
     style::Color::*,
-    terminal::{size, Clear, ClearType, DisableLineWrap},
-    QueueableCommand,
+    terminal::{size, Clear, ClearType},
 };
 use termimad::*;
 
@@ -45,8 +44,8 @@ struct App {
     skin: MadSkin,                // theme for rendering output messages(etc: MD, code snippet...)
     model: &'static str,          // stands for different chatgpt models.
     // eg: gpt-3.5-turbo, gpt-4-1106-preview
-    initial_pmt: String, // stands for initial prompt
-    history: Vec<ChatCompletionRequestMessage>,
+    initial_pmt: String,                        // stands for initial prompt
+    history: Vec<ChatCompletionRequestMessage>, // for storing the chat history
 }
 
 impl App {
