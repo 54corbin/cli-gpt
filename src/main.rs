@@ -184,7 +184,10 @@ impl App {
             .build()
             .unwrap();
         self.history.push(resp.into());
+        self.render_resp(resp_buf.clone());
+    }
 
+    fn render_resp(&mut self, resp_buf: String) {
         // count the number of lines in the response buffer
         let screen_width = size().unwrap().0;
         let mut resp_lines = 0_u16;
@@ -192,6 +195,9 @@ impl App {
             resp_lines += (line.len() as u16 / screen_width) + 1;
         }
 
+        if resp_lines < 1 {
+            resp_lines = 1;
+        }
         //clean the raw content and reformat the whole content from gpt
         let _ = queue!(
             stdout(),
