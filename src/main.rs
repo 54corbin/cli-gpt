@@ -12,21 +12,23 @@ use clap::Parser;
 use futures::StreamExt;
 use std::{
     env,
-    io::{self, stdout, BufRead, Write},
+    io::{stdout, Write},
     println,
+    process::exit,
 };
 use termimad::crossterm::{
-    cursor::{MoveLeft, MoveToPreviousLine},
-    queue,
-    style::Color::*,
-    terminal::{size, Clear, ClearType},
+    cursor::{self, MoveLeft, MoveToPreviousLine},
+    event::{self, Event},
+    execute, queue,
+    style::{self, Color::*},
+    terminal::{disable_raw_mode, enable_raw_mode, size, Clear, ClearType},
+    ExecutableCommand, QueueableCommand,
 };
 use termimad::*;
 
 #[tokio::main]
 async fn main() {
     let mut app = App::new();
-    // app.init().await;
     app.run().await;
 }
 
@@ -35,25 +37,22 @@ async fn main() {
 struct AppArgs {
     #[arg(short = '4', long, default_value_t = false)]
     enable_gpt4: bool,
-
     pmt: Vec<String>,
 }
 
 struct App {
-    client: Client<OpenAIConfig>, // chatgpt's api sdk client
-    skin: MadSkin,                // theme for rendering output messages(etc: MD, code snippet...)
-    model: &'static str,          // stands for different chatgpt models.
-    // eg: gpt-3.5-turbo, gpt-4-1106-preview
-    initial_pmt: String,                        // stands for initial prompt
+    client: Client<OpenAIConfig>,               // chatgpt's api sdk client
+    skin: MadSkin, // theme for rendering output messages(etc: MD, code snippet...)
+    model: &'static str, // chatgpt models.(eg: gpt-3.5-turbo, gpt-4-1106-preview)
+    initial_pmt: String, // stands for initial prompt
     history: Vec<ChatCompletionRequestMessage>, // for storing the chat history
 }
 
 impl App {
     //main loop
     pub async fn run(&mut self) {
-        println!("Tip: two continuous enters for sending");
+        println!("Tips: two continuous enters for sending.");
         if !self.initial_pmt.is_empty() {
-            // self.send_message(self.initial_pmt.clone()).await;
             if let Ok(stream) = self.send_message(self.initial_pmt.clone()).await {
                 self.streaming_and_rendering_resp(stream).await;
             };
@@ -107,22 +106,115 @@ impl App {
         }
     }
 
+    // read user input from terminal
     fn read_pmt() -> String {
-        let mut buf = String::new();
+        // with raw mode enabled, we need to handle every aspect of stdout(eg: short-cut,
+        // backspace, every key stroke, etc)
+        let _ = enable_raw_mode();
 
-        let lines = io::stdin().lock().lines();
+        let mut cursor_index: usize = 0;
+        let mut pmt = String::new();
+        let mut stdout = stdout();
+        loop {
+            if let Event::Key(key) = event::read().unwrap() {
+                match key.code {
+                    event::KeyCode::Enter => {
+                        //ctrl-Enter is send pmt
+                        if key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                            let _ = disable_raw_mode();
+                            return pmt;
+                        }
+                        pmt.insert(cursor_index, '\n');
 
-        // read until blank line(two continuous enters)
-        for line in lines {
-            let last_line = line.unwrap();
+                        //produce a new line in the terminal
+                        execute!(stdout, Clear(ClearType::UntilNewLine)).unwrap();
+                        let _ = stdout.write(b"\n");
+                        execute!(stdout, cursor::MoveToColumn(1)).unwrap();
+                        cursor_index = 0;
+                        if let Some(current_line) = pmt.lines().last().take() {
+                            execute!(stdout, cursor::MoveToColumn(1)).unwrap();
+                            execute!(stdout, style::Print(current_line)).unwrap();
+                        }
+                    }
+                    event::KeyCode::Up => {
+                        stdout.execute(cursor::MoveUp(1)).unwrap();
+                    }
+                    event::KeyCode::Down => {
+                        stdout.execute(cursor::MoveDown(1)).unwrap();
+                    }
+                    event::KeyCode::Left => {
+                        if cursor_index > 0 {
+                            stdout.execute(cursor::MoveLeft(1)).unwrap();
+                            cursor_index -= 1;
+                        }
+                    }
+                    event::KeyCode::Right => {
+                        let current_line = pmt.lines().last().take();
+                        if cursor_index < current_line.unwrap().len() {
+                            stdout.execute(cursor::MoveRight(1)).unwrap();
+                            cursor_index += 1;
+                        }
+                    }
+                    event::KeyCode::Char(c) => {
+                        // when control-c was pressed, terminate the program
+                        if key.modifiers.contains(event::KeyModifiers::CONTROL) && c == 'c' {
+                            print!("\nBye!");
+                            let _ = disable_raw_mode();
+                            exit(0);
+                        }
+                        if key.modifiers.contains(event::KeyModifiers::CONTROL) && c == 'e' {
+                            if let Some(current_line) = pmt.lines().last().take() {
+                                cursor_index = current_line.len();
+                                execute!(stdout, cursor::MoveToColumn(cursor_index as u16 + 1))
+                                    .unwrap();
+                            }
+                            continue;
+                        }
+                        if key.modifiers.contains(event::KeyModifiers::CONTROL) && c == 'a' {
+                            execute!(stdout, cursor::MoveToColumn(1)).unwrap();
+                            cursor_index = 0;
+                            continue;
+                        }
+                        pmt.insert(cursor_index, c);
+                        cursor_index += 1;
 
-            if last_line.len() <= 1 {
-                break;
+                        let current_line = pmt.lines().last().take();
+                        if cursor_index != current_line.unwrap().len() {
+                            App::render_current_line(
+                                current_line.unwrap(),
+                                cursor_index,
+                                &mut stdout,
+                            );
+                        } else {
+                            execute!(stdout, style::Print(c)).unwrap();
+                        }
+                    }
+                    event::KeyCode::Backspace | event::KeyCode::Delete => {
+                        if cursor_index > 0 {
+                            pmt.remove(cursor_index - 1);
+                            cursor_index -= 1;
+                            if let Some(current_line) = pmt.lines().last().take() {
+                                App::render_current_line(current_line, cursor_index, &mut stdout);
+                            } else {
+                                execute!(stdout, Clear(ClearType::CurrentLine)).unwrap();
+                                execute!(stdout, cursor::MoveToColumn(1)).unwrap();
+                            }
+                        }
+                    }
+                    _ => break,
+                }
             }
-            buf.push_str(&last_line);
+            let _ = stdout.flush();
         }
+        let _ = disable_raw_mode();
+        pmt
+    }
 
-        buf
+    fn render_current_line(current_line: &str, cursor_index: usize, stdout: &mut std::io::Stdout) {
+        execute!(stdout, cursor::MoveToColumn(1_u16)).unwrap();
+        execute!(stdout, Clear(ClearType::CurrentLine)).unwrap();
+        execute!(stdout, style::Print(current_line)).unwrap();
+        execute!(stdout, cursor::MoveToColumn(cursor_index as u16 + 1)).unwrap();
     }
 
     async fn send_message(
