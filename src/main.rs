@@ -15,7 +15,6 @@ use std::{
     io::{stdout, Write},
     panic, println,
     process::exit,
-    rc::Rc,
 };
 use termimad::crossterm::{
     cursor::{self, MoveLeft, MoveToPreviousLine},
@@ -29,8 +28,9 @@ use termimad::*;
 
 #[tokio::main]
 async fn main() {
-    panic::set_hook(Box::new(|_| {
+    panic::set_hook(Box::new(|info| {
         disable_raw_mode().unwrap();
+        println!("Error: {:#?}", info);
     }));
     let mut app = App::new();
     app.run().await;
@@ -69,12 +69,12 @@ impl App {
 
         loop {
             let pmt = Self::read_pmt();
-            print!("\n------\n{:#?}", pmt);
-            // if pmt.len() > 1 {
-            //     if let Ok(stream) = self.send_message(pmt).await {
-            //         self.streaming_and_rendering_resp(stream).await;
-            //     };
-            // }
+            // print!("\n------\n{:#?}", pmt);
+            if pmt.len() > 1 {
+                if let Ok(stream) = self.send_message(pmt).await {
+                    self.streaming_and_rendering_resp(stream).await;
+                };
+            }
         }
     }
 
@@ -125,65 +125,25 @@ impl App {
         loop {
             if let Event::Key(key) = event::read().unwrap() {
                 match key.code {
-                    event::KeyCode::Enter => {
-                        //ctrl-Enter for sending pmt
-                        if key.modifiers.contains(event::KeyModifiers::CONTROL) {
-                            let _ = disable_raw_mode();
-                            println!("ctrl + enter");
-                            return pmts.join("");
-                        }
-
-                        let lines = pmts.len();
-                        if let Some(line) = pmts.get_mut(pmts_index) {
-                            //at the last line
-                            if pmts_index == lines - 1 {
-                                line.push('\n');
-                                pmts_index += 1;
-                                pmts.insert(pmts_index, String::from("\n"));
-                                execute!(stdout, cursor::MoveToColumn(1)).unwrap();
-                                execute!(stdout, style::Print("\n")).unwrap();
-                                cursor_index = 0;
-                                continue;
-                            }
-                            line.insert(cursor_index, '\n');
-                            let right: Rc<String> =
-                                Rc::new(line.drain(1 + cursor_index..).collect());
-                            pmts.insert(pmts_index + 1, Rc::clone(&right).to_string());
-
-                            let last_row = cursor::position().unwrap().1;
-                            execute!(stdout, Clear(ClearType::FromCursorDown)).unwrap();
-                            let other_lines: String =
-                                pmts.clone().drain(1 + pmts_index..).collect::<String>();
-                            let _ = disable_raw_mode();
-                            print!("\n{other_lines}");
-                            let _ = enable_raw_mode();
-                            let current_row = cursor::position().unwrap().1;
-                            execute!(stdout, cursor::MoveUp(current_row - last_row - 1)).unwrap();
-                            execute!(stdout, cursor::MoveToColumn(1)).unwrap();
-                            cursor_index = 0;
-                        } else {
-                            pmts.insert(pmts_index, String::from("\n"));
-                            execute!(stdout, style::Print("\n")).unwrap();
-                        }
-                        pmts_index += 1;
-                    }
-
                     event::KeyCode::Up => {
                         if pmts_index > 0 {
                             stdout.execute(cursor::MoveUp(1)).unwrap();
                             pmts_index -= 1;
 
                             let current_line = pmts.get(pmts_index).unwrap();
-                            if cursor_index > current_line.len() - 1 {
-                                execute!(stdout, cursor::MoveToColumn(current_line.len() as u16))
-                                    .unwrap();
-                                cursor_index = current_line.len() - 1;
+                            if cursor_index > current_line.len() {
+                                execute!(
+                                    stdout,
+                                    cursor::MoveToColumn(1 + current_line.len() as u16)
+                                )
+                                .unwrap();
+                                cursor_index = current_line.len();
                             }
                         }
                     }
 
                     event::KeyCode::Down => {
-                        if pmts_index < pmts.len() - 1 {
+                        if pmts_index + 1 < pmts.len() {
                             stdout.execute(cursor::MoveDown(1)).unwrap();
                             pmts_index += 1;
 
@@ -217,6 +177,32 @@ impl App {
                                 cursor_index += 1;
                             }
                         }
+                    }
+
+                    event::KeyCode::Enter => {
+                        //ctrl-Enter for sending pmt
+                        if key.modifiers.contains(event::KeyModifiers::CONTROL) {
+                            let _ = disable_raw_mode();
+                            return pmts.join("\n");
+                        }
+
+                        pmts_index += 1;
+                        if let Some(current_line) = pmts.get_mut(pmts_index - 1) {
+                            let new_line = current_line.drain(cursor_index..).collect();
+                            pmts.insert(pmts_index, new_line);
+                            App::rerender_pmts(&mut stdout, pmts.clone(), pmts_index - 1);
+                            execute!(stdout, cursor::MoveDown(1)).unwrap();
+                        } else {
+                            if pmts_index > pmts.len() {
+                                pmts.insert(pmts.len(), "".to_string());
+                            } else {
+                                pmts.insert(pmts_index, "".to_string());
+                            }
+                            execute!(stdout, style::Print("\n")).unwrap();
+                        }
+
+                        execute!(stdout, cursor::MoveToColumn(1)).unwrap();
+                        cursor_index = 0;
                     }
 
                     event::KeyCode::Char(c) => {
@@ -259,23 +245,13 @@ impl App {
 
                         if let Some(current_line) = pmts.get_mut(pmts_index) {
                             current_line.insert(cursor_index, c);
-                            cursor_index += 1;
-
-                            let mut cln = current_line.len();
-                            if current_line.ends_with('\n') {
-                                cln -= 1;
-                            }
-                            if cursor_index != cln {
-                                App::render_current_line(current_line, &mut stdout);
-                                execute!(stdout, cursor::MoveRight(1_u16)).unwrap();
-                            } else {
-                                execute!(stdout, style::Print(c)).unwrap();
-                            }
+                            App::rerender_pmts(&mut stdout, pmts.clone(), pmts_index);
+                            execute!(stdout, cursor::MoveRight(1_u16)).unwrap();
                         } else {
                             pmts.insert(pmts_index, c.to_string());
                             execute!(stdout, style::Print(c)).unwrap();
-                            cursor_index += 1;
                         }
+                        cursor_index += 1;
                     }
                     event::KeyCode::Backspace | event::KeyCode::Delete => {
                         if cursor_index > 0 {
@@ -283,7 +259,7 @@ impl App {
                             cursor_index -= 1;
                             current_line.remove(cursor_index);
                             if !current_line.is_empty() {
-                                App::render_current_line(current_line, &mut stdout);
+                                // App::render_current_line(current_line, &mut stdout);
                                 execute!(stdout, cursor::MoveLeft(1_u16)).unwrap();
                             } else {
                                 execute!(stdout, Clear(ClearType::CurrentLine)).unwrap();
@@ -297,14 +273,23 @@ impl App {
             let _ = stdout.flush();
         }
         let _ = disable_raw_mode();
-        pmts.join("")
+        pmts.join("\n")
     }
 
-    fn render_current_line(current_line: &str, stdout: &mut std::io::Stdout) {
+    fn rerender_pmts(stdout: &mut std::io::Stdout, mut pmts: Vec<String>, current_row: usize) {
         execute!(stdout, cursor::SavePosition).unwrap();
         execute!(stdout, cursor::MoveToColumn(1_u16)).unwrap();
-        execute!(stdout, Clear(ClearType::CurrentLine)).unwrap();
-        execute!(stdout, style::Print(current_line)).unwrap();
+        execute!(stdout, Clear(ClearType::FromCursorDown)).unwrap();
+
+        let mut tmp = 0;
+        pmts.drain(current_row..).for_each(|mut line| {
+            execute!(stdout, cursor::MoveToColumn(1_u16)).unwrap();
+            if tmp != 0 {
+                line = "\n".to_string() + &line;
+            }
+            execute!(stdout, style::Print(line)).unwrap();
+            tmp += 1;
+        });
         execute!(stdout, cursor::RestorePosition).unwrap();
     }
 
@@ -312,11 +297,6 @@ impl App {
         &mut self,
         pmt: String,
     ) -> Result<ChatCompletionResponseStream, OpenAIError> {
-        // println!(
-        //     "sending... model={} \t history count={}",
-        //     self.model,
-        //     self.history.len()
-        // );
         let message = ChatCompletionRequestUserMessageArgs::default()
             .content(pmt)
             .build()
